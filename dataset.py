@@ -1,13 +1,17 @@
+import os
+import glob
+import pandas as pd
 import torchvision.io
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset,DataLoader
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+from typing import Tuple,Union
 
-def load_tokenizer(tokenizer_model:str,data_dir:str=None):
+
+def load_tokenizer(tokenizer_model:str):
     if not os.path.exists('data/tokenizer'):
         tokenizer=torch.hub.load('huggingface/pytorch-transformers', 'tokenizer',tokenizer_model)
-        logging.info("Updating Tokenizer Vocab on Data")
-        #insert code to get to process data_dir
-        #[tokenizer(i) for i in tqdm(data_dir[:,1])]
         tokenizer.save_pretrained('data/tokenizer')
         return tokenizer
     else:
@@ -15,27 +19,48 @@ def load_tokenizer(tokenizer_model:str,data_dir:str=None):
         return tokenizer
 
 
+def collate_fn(data):
+    imgs,labels=zip(*data)
+    return torch.stack(imgs,0),[i for i in labels]
+        
+
+
+
+
 
 class Stream_Dataset(Dataset):
-    def __init__(self,seq_length,data_dir,img_dir,tokenizer_model='medicalai/ClinicalBERT'):
+    def __init__(self,data_dir:str,img_dir:str='',imgsz:int=300,csv_dir:str=None,tokenizer_model:str='medicalai/ClinicalBERT'):
         self.data_dir=data_dir
-        # self.data=pd.read_csv(data_dir+'/'+'result0.csv').to_numpy()
+        csv_dir=os.path.join(data_dir,csv_dir) if csv_dir else sorted(glob.glob(data_dir+"/*.csv"),reverse=True,key=lambda x:len(pd.read_csv(x)))[0]
+        self.data=pd.read_csv(csv_dir).to_numpy()
         self.img_dir=img_dir
-        self.max_length=seq_length
+        self.imgsz=imgsz
+        self.resizer=torchvision.transforms.Resize(size=imgsz)
+        self.update_tokenizer(tokenizer_model)
+        
     def __len__(self):
         return self.data.shape[0]
     def __getitem__(self,idx):
         img_name=self.data[idx,0]
         semantic_str=self.data[idx,1]
-        img=torchvision.io.read_image(self.data_dir+'/'+self.img_dir+'/'+img_name)
-        return img,semantic_str
-
+        img=self.resizer(torchvision.io.read_image(self.data_dir+'/'+self.img_dir+'/'+img_name))
+        return img,semantic_str.strip()
+    
+    def update_tokenizer(self,tokenizer_model):
+        tokenizer=load_tokenizer(tokenizer_model=tokenizer_model)
+        _=tokenizer(self.data[:,-1].tolist())
+        print(f"Updated tokens from {len(self.data)} rows of data")
+        tokenizer.save_pretrained('data/tokenizer/')
+        return 
 
 if __name__=='__main__':
-    # dataset=Stream_Dataset(
-    #         seq_length=50,
-    #         data_dir="/home/mehedi/Desktop/raghib/FLICKR-30K IMAGE CAPTIONING/flickr30k_images",
-    #         img_dir='flickr30k_images',
-    #         tokenizer_model='bert-base-uncased'
-    # )
-    pass
+    dataset=Stream_Dataset(
+            data_dir="./data/flickr30k_images",
+            imgsz=300,
+            img_dir='flickr30k_images',
+            csv_dir='result0.csv',
+            tokenizer_model='bert-base-uncased'
+    )
+    print(dataset)
+    datal=DataLoader(dataset,batch_size=5)
+    print(next(iter(datal)))

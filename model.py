@@ -11,7 +11,7 @@ from torch.nn import (
     functional as F,
 )
 from torch.utils.data import Dataset, DataLoader
-
+from utils import *
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
@@ -192,114 +192,66 @@ class CustomTransformerDecoderLayer(nn.Module):
 
 
 class ImgPatcher(nn.Module):
-    def __init__(self, n_patches: int, patch_dims: int, img_chw: Tuple[int, int, int]):
-        super(ImgPatcher, self).__init__()
-        C, H, W = img_chw
-        assert (
-            torch.math.ceil(torch.math.sqrt(n_patches)) - torch.math.sqrt(n_patches)
-            == 0
-        ), "Please make sure n_patches is a square of a positive integer"
-        assert H == W, "Please make sure that the image is a square image"
-        self.n_patches = n_patches
-        self.patch_dims = patch_dims
-        self.kernel_size = int(H // torch.math.sqrt(n_patches))
-        self.conv = nn.Conv2d(
-            in_channels=C,
-            out_channels=self.patch_dims,
-            kernel_size=self.kernel_size,
-            stride=self.kernel_size,
-        )
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = x.permute(0, 2, 3, 1)
-        x_emb = x.reshape(x.size(0), self.n_patches, x.size(-1))
+    def __init__(self,n_patches:int,patch_dims:int,img_chw:Tuple[int,int,int]):
+        super(ImgPatcher,self).__init__()
+        C,H,W=img_chw
+        assert torch.math.ceil(torch.math.sqrt(n_patches))-torch.math.sqrt(n_patches)==0, "Please make sure n_patches is a square of a positive integer"
+        assert H==W, "Please make sure that the image is a square image"
+        self.n_patches=n_patches
+        self.patch_dims=patch_dims
+        self.kernel_size=int(H//torch.math.sqrt(n_patches))
+        self.conv=nn.Conv2d(in_channels=C,out_channels=self.patch_dims,kernel_size=self.kernel_size,stride=self.kernel_size)
+    def forward(self,x):
+        x=self.conv(x)
+        x=x.permute(0,2,3,1)
+        x_emb=x.reshape(x.size(0),self.n_patches,x.size(-1))
         return x_emb
 
 
 class SpatialStream(nn.Module):
-    def __init__(
-        self,
-        n_patches: int,
-        img_chw: Tuple[int, int, int],
-        dropout: float = 0.1,
-        d_model: int = 768,
-        nhead: int = 8,
-        dim_feedforward: int = 2048,
-        activation: str = "relu",
-        num_ts_blocks: int = 2,
-    ):
-        super(SpatialStream, self).__init__()
-        self.patcher = ImgPatcher(n_patches, d_model, img_chw)
-        self.pos_enc = PositionalEncoding(d_model, dropout, n_patches)
-        self.spattransformer_blocks = nn.ModuleList(
-            [
-                TransformerEncoderLayer(
-                    d_model,
-                    nhead,
-                    dim_feedforward,
-                    batch_first=True,
-                    activation=activation,
-                )
-                for i in range(num_ts_blocks)
-            ]
-        )
-
-    def forward(self, x):
-        embedded = self.patcher(x)
-        encoded = self.pos_enc(embedded)
-        enc_memory_list = []
+    def __init__(self, n_patches:int,img_chw:Tuple[int,int,int],dropout:float=0.1,d_model:int=768,nhead:int=8,dim_feedforward:int=2048,activation:str='relu',num_ts_blocks:int=2):
+        super(SpatialStream,self).__init__()
+        self.patcher=ImgPatcher(n_patches,d_model,img_chw)
+        self.pos_enc=PositionalEncoding(d_model,dropout,n_patches)
+        self.spattransformer_blocks=nn.ModuleList([TransformerEncoderLayer(d_model,nhead,dim_feedforward,batch_first=True,activation=activation) for i in range(num_ts_blocks)])
+        
+    def forward(self,x):
+        embedded=self.patcher(x)
+        encoded=self.pos_enc(embedded)
+        enc_memory_list=[]
         for encoder_layer in self.spattransformer_blocks:
-            encoded = encoder_layer(encoded)
+            encoded=encoder_layer(encoded)
             enc_memory_list.append(encoded)
         return enc_memory_list
 
-
 class SemanticStream(nn.Module):
-    def __init__(
-        self,
-        max_seql: int,
-        vocab_size: int,
-        dropout: float,
-        d_model: int,
-        nhead: int,
-        num_ts_blocks: int,
-        dim_feedforward: int,
-        activation: Callable[[torch.tensor, ...], torch.tensor],
-    ):
-        super(SemanticStream, self).__init__()
-        self.tokenizer = torch.hub.load(
-            "huggingface/pytorch-transformers", "tokenizer", "medicalai/ClinicalBERT"
-        )  # add this to dataloader instead of model along with patching
-        self.bert_embedding = torch.hub.load(
-            "huggingface/pytorch-transformers", "model", "medicalai/ClinicalBERT"
-        )
-        self.pos_enc = PositionalEncoding(d_model, dropout, max_seql)
-        self.semtransformer_blocks = nn.ModuleList(
-            [
-                CustomTransformerDecoderLayer(
-                    d_model,
-                    nhead,
-                    dim_feedforward,
-                    batch_first=True,
-                    activation=activation,
-                )
-                for _ in range(num_ts_blocks)
-            ]
-        )
-        self.out = nn.Linear(d_model, vocab_size)
+    def __init__(self,max_seql:int,dropout:float=0.1,num_ts_blocks:int=2,d_model:int=512,nhead:int=8,dim_feedforward:int=2048,activation:str='relu',tokenizer_model='medicalai/ClinicalBERT'):
+        super(SemanticStream,self).__init__()
+        self.max_seql=max_seql
+        self.tokenizer=load_tokenizer(tokenizer_model=tokenizer_model)            #add this to dataloader instead of model along with patching
+        self.bert_embedding = load_bert_embedder(tokenizer_model=tokenizer_model,tokenizer=self.tokenizer)
+        self.pos_enc=PositionalEncoding(d_model,dropout,max_seql)
+        self.semtransformer_blocks=nn.ModuleList([CustomTransformerDecoderLayer(d_model,nhead,dim_feedforward,batch_first=True,activation=activation) for _ in range(num_ts_blocks)])
+        self.out=nn.Linear(d_model,len(tokenizer))
+    def forward(self,tgt,enc_memory_list):
+        tgt=self.tokenizer(tgt,max_length=self.max_seql,padding='max_length',truncation=True,return_tensors='pt')
+        tokens=tgt['input_ids']
+        tgt_padmask=tgt['attention_mask']==0
+        #N,max_seql=tgt['input_ids'].shape
+        tgt_mask=torch.tril(torch.ones(self.max_seql,self.max_seql))
+        embedded=self.bert_embedding(**tgt).last_hidden_state
+        encoded=self.pos_enc(embedded)
+        for decoder_layer,memory in zip(self.semtransformer_blocks,enc_memory_list):
+            encoded,attn=decoder_layer(encoded,memory,tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_padmask)
+            tgt_mask=None
+            tgt_padmask=None
+        out=self.out(encoded)
 
-    def forward(self, tgt, enc_memory_list):
-        N, max_seql = tgt["input_ids"].shape
-        tgt_mask = torch.tril(torch.ones(max_seql, max_seql))
-        embedded = self.bert_embedding(**tgt).last_hidden_state
-        encoded = self.pos_enc(embedded)
-        for decoder_layer, memory in zip(self.semtransformer_blocks, enc_memory_list):
-            encoded, attn = decoder_layer(encoded, memory, tgt_mask=tgt_mask)
-            tgt_mask = None
-        out = self.out(encoded)
+        return out,attn
 
-        if self.training:
-            return out
+    def save_bert_embedder(self):
+        self.bert_embedding.save_pretrained('data/model/')
 
-        return out, attn
+
+# class TwoStreamTransformer(nn.Module):
+#     def __init__(self,max_seql,dropout)

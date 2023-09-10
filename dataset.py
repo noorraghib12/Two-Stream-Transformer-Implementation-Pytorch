@@ -19,10 +19,7 @@ def load_tokenizer(tokenizer_model:str):
         return tokenizer
 
 
-def collate_fn(data):
-    imgs,labels=zip(*data)
-    return torch.stack(imgs,0),[i for i in labels]
-        
+
 
 
 
@@ -55,12 +52,12 @@ class Stream_Dataset(Dataset):
 
 if __name__=='__main__':
     dataset=Stream_Dataset(
-            data_dir="./data/flickr30k_images",
+            data_dir="./dataset",
             imgsz=300,
-            img_dir='flickr30k_images',
-            csv_dir='result0.csv',
+            img_dir='images',
             tokenizer_model='bert-base-uncased'
     )
     print(dataset)
     datal=DataLoader(dataset,batch_size=5)
     print(next(iter(datal)))
+    print(next(iter(datal))[0].shape)

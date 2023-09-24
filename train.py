@@ -17,8 +17,7 @@ def train_one_epoch(epoch_index, tb_writer):
         optimizer.zero_grad()
 
         # Make predictions for this batch
-        enc_memory_list = encoder(images)
-        outputs,attn=decoder(tgt=captions,enc_memory_list=enc_memory_list)
+        outputs,attn=model(tgt=captions,image=images)
         # Compute the loss and its gradients
         loss = loss_fn(outputs, labels)
         loss.backward()
@@ -40,7 +39,7 @@ def train_one_epoch(epoch_index, tb_writer):
 
 
 
-def Trainer(epochs,encoder,decoder,training_loader,validation_loader,loss_fn,optimizer):
+def Trainer(epochs,model,validation_loader,loss_fn):
 
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -54,25 +53,22 @@ def Trainer(epochs,encoder,decoder,training_loader,validation_loader,loss_fn,opt
         print('EPOCH {}:'.format(epoch_number + 1))
 
         # Make sure gradient tracking is on, and do a pass over the data
-        encoder.train(True)
-        decoder.train(True)
+        model.train()
         avg_loss = train_one_epoch(epoch_number, writer)
 
 
         running_vloss = 0.0
         # Set the model to evaluation mode, disabling dropout and using population
         # statistics for batch normalization.
-        encoder.eval()
-        decoder.eval()
+        model.eval()
 
         # Disable gradient computation and reduce memory consumption.
         with torch.no_grad():
             for i, vdata in enumerate(validation_loader):
                 vinputs, vlabels = vdata
-                vlabels_idx=decoder.tokenizer(vlabels,max_length=decoder.max_seql,padding='max_length',return_tensors='pt')
-                memory = encoder(vinputs)
-                voutputs=decoder(tgt=vlabels,enc_memory_list=memory)
-                vloss = loss_fn(voutputs, vlabels_idx)
+                vlabels_idx=model.decoder.tokenizer(vlabels,max_length=model.decoder.max_seql,padding='max_length',return_tensors='pt')
+                voutputs,attn=model(images=vinputs)
+                vloss = loss_fn(voutputs.transpose(1,2), vlabels_idx)
                 running_vloss += vloss
 
         avg_vloss = running_vloss / (i + 1)

@@ -39,7 +39,7 @@ class HFTokenizer:
     
     def __len__(self):
         return len(self.tokenizer)
-    
+
     def save(self):
         self.tokenizer.save_pretrained(self.save_pth)
     
@@ -49,7 +49,7 @@ class HFTokenizer:
             for (img,text) in data:
                 self.tokenizer(text)
                 dpoints+=len(text)
-        elif isinstance(data,Union[np.array,torch.tensor]):
+        elif isinstance(data,(np.ndarray,torch.Tensor)):
             data=data.tolist()
             self.tokenizer(data)
             dpoints+=len(data)

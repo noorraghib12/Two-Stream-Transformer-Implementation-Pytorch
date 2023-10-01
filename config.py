@@ -7,10 +7,11 @@ def get_config():
         nhead=8,
         dim_feedforward=2048,
         num_ts_blocks=4,
+        tokenizer_model='medicalai/ClinicalBERT',
         num_epochs=20,
-        model='model',
-        model_folder='weights',
-        model_filename='tmodel_'
+        device='cpu',
+        train_batchsz=10,
+        val_batchsz=10,
     )
 
 class config:

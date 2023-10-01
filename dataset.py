@@ -58,6 +58,8 @@ class HFTokenizer:
             dpoints+=len(data)
         print(f"Updated tokens from {dpoints} rows of data")
         self.save()
+    def decode(self,data):
+        return self.tokenizer.decode(data,skip_special_tokens=True,clean_up_tokenization_spaces=True,)
 
 
     

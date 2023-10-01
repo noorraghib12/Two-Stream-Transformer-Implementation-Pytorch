@@ -9,16 +9,9 @@ from albumentations.pytorch import ToTensorV2
 from typing import Tuple,Union,Optional
 from torchvision import transforms
 import numpy as np
-from config import get_config
+from config import Config
+config=Config(config_path='config.ini')
 
-def load_tokenizer(tokenizer_model:str):
-    if not os.path.exists('data/tokenizer'):
-        tokenizer=torch.hub.load('huggingface/pytorch-transformers', 'tokenizer',tokenizer_model)
-        tokenizer.save_pretrained('data/tokenizer')
-        return tokenizer
-    else:
-        tokenizer=torch.hub.load('huggingface/pytorch-transformers', 'tokenizer','data/tokenizer/')
-        return tokenizer
 
 
 class HFTokenizer:
@@ -28,7 +21,7 @@ class HFTokenizer:
         self.tokenizer=torch.hub.load('huggingface/pytorch-transformers', 'tokenizer',tokenizer_model) if not os.path.exists(tok_pth) else torch.hub.load('huggingface/pytorch-transformers', 'tokenizer',tok_pth)
         self.save_pth=tok_pth
         if not max_length:
-            max_length=(get_config())['max_seql']
+            max_length=config.max_seql
         self.tokenizer.model_max_length=max_length
         self.vocab=self.tokenizer.vocab
     def __call__(self,data,padding=None,truncation=True,return_tensors='pt',add_special_tokens=True):
@@ -66,16 +59,19 @@ class HFTokenizer:
 
 
 class Stream_Dataset(Dataset):
-    def __init__(self,data_dir:str,max_seql:int=None,img_dir:str='',transforms=None,imgsz:int=300,csv_dir:str=None,tokenizer_model:Union[HFTokenizer,str]='medicalai/ClinicalBERT'):
+    def __init__(self,data_dir:str,img_dir:str='',transforms=None,imgsz:int=300,csv_dir:str=None,validation:bool=False,tokenizer_model:Union[HFTokenizer,str]='medicalai/ClinicalBERT'):
         super(Stream_Dataset,self).__init__()
         self.data_dir=data_dir
         csv_dir=os.path.join(data_dir,csv_dir) if csv_dir else self.get_default_csv(data_dir)
         self.data=pd.read_csv(csv_dir).to_numpy()
+        if validation:
+            r_idx=np.random.randint(0,self.data.shape[0]-1,(int(self.data.shape[0]*0.5),))
+            self.data=self.data[r_idx]
         self.img_dir=img_dir
         self.imgsz=imgsz
         self.resizer=torchvision.transforms.Resize(size=(imgsz,imgsz))
         self.transforms=self.get_default_imgtransforms() if transforms=='default' else transforms
-        tokenizer=HFTokenizer(tokenizer_model,max_length=max_seql) if isinstance(tokenizer_model,str) else tokenizer_model
+        tokenizer=HFTokenizer(tokenizer_model) if isinstance(tokenizer_model,str) else tokenizer_model
         tokenizer.update(self.data[:,-1].tolist())
         del tokenizer
         

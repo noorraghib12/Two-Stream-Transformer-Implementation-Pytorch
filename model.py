@@ -2,7 +2,7 @@ from typing import Optional, Any, Union, Callable, Tuple
 import torch
 from torch import math, Tensor
 import torch.nn as nn
-from torch.nn import (
+from nn import (
     MultiheadAttention,
     LayerNorm,
     Dropout,
@@ -14,11 +14,8 @@ from torch.utils.data import Dataset, DataLoader
 from utils import *
 
 from torch import math
-import torch
-import torch.nn as nn
 import os, logging
 from torchvision import transforms
-import cv2
 import numpy as np
 
 

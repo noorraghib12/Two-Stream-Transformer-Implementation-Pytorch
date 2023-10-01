@@ -1,3 +1,6 @@
+
+import configparser
+
 def get_config():
     return dict(
         imgsz= 300,
@@ -14,10 +17,25 @@ def get_config():
         val_batchsz=10,
     )
 
-class config:
-    def __init__(self):
-        self.__dict__=get_config()
 
+def load_config_ini(config_path):
+    config=configparser.ConfigParser()
+    config.read(config_path)
+    config_=dict()
+    for section in [i for i in config if 'DEFAULT' not in i]:
+        for param in section:
+            if len(config[section][param])>0:
+                config_[param]=int(config[section][param]) if config[section][param].isdigit() else config[section][param]
+            else:
+                config_[param]=None
+    return config_
+
+
+
+
+class Config:
+    def __init__(self,config_path:str=None):
+        self.__dict__=get_config() if not config_path else load_config_ini(config_path)
 
 
 

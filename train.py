@@ -1,9 +1,62 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torchmetrics
-from torchmetrics.multimodal.clip_score import CLIPScore
-from torchmetrics.text import WordErrorRate, 
+from torchmetrics.text import WordErrorRate
+import argparse
+from config import Config
+import datetime
+from dataset import HFTokenizer,Stream_Dataset
+from torch.optim import Adam,SGD, RMSprop
+from torch.nn import CrossEntropyLoss
+from model import TwoStreamTransformer
+arg_parser=argparse.ArgumentParser()
+arg_parser.add_argument('--config','-c',help='Path to config file',default=None,type=str)
+args=arg_parser.parse_args()
+
+
+config=Config(config_path=args.config)
+
+tokenizer=HFTokenizer(tokenizer_model=config.tokenizer_model)
+training_loader=Stream_Dataset(
+    data_dir='flikr8k',
+    csv_dir='train.csv',
+    img_dir='images',
+    imgsz=config.imgsz,
+    tokenizer_model=config.tokenizer_model
+)
+validation_loader=Stream_Dataset(
+    data_dir='flikr8k',
+    csv_dir='train.csv',
+    img_dir='images',
+    imgsz=config.imgsz,
+    tokenizer_model=config.tokenizer_model,
+    validation=True
+)
+
+optimizer=load_optimizer(config.optimizer)
+loss_fn=CrossEntropyLoss()
 accuracy_fn=torchemetrics.classification.Accuracy(task='multiclass',num_classes=len(tokenizer))
+
+model=TwoStreamTransformer(n_patches=config.n_patches,
+                           img_chw=(3,config.imgsz,config.imgsz),
+                           max_seql=config.max_seql,
+                           num_ts_blocks=config.num_ts_blocks,
+                           n_head=config.nhead,
+                           dropout=config.dropout,
+                           d_model=config.d_model,
+                           dim_feedforward=config.dim_feedforward,
+                           activation=config.activation,
+                           tokenizer_model=config.tokenizer_model)
+
+
+
+def load_optimizer(opt):
+    if opt.lower()=='adam':
+        return Adam(lr=config.learning_rate)
+    elif opt.lower()=='sgd':
+        return SGD(lr=config.learning_rate,momentum=config.sgd_momentum)
+    elif opt.lower()=='rmsprop':
+        return RMSprop(lr=config.learning_rate,momentum=config.momentum,alpha=config.rms_alpha)
 
 
 def train_one_epoch(epoch_index, tb_writer):
@@ -38,11 +91,10 @@ def train_one_epoch(epoch_index, tb_writer):
         # Gather data and report
         running_acc+=acc_.item()
         running_loss += loss.item()
-        if i % 10 == 9:
-            last_loss = running_loss / 10 # loss per
-            last_acc = running_acc / 10
-            batch
-            print('  batch {} train_loss: {} train_acc: {}'.format(i + 1, last_loss,last_acc))
+        if i % 50 == 49:
+            last_loss = running_loss / 50 # loss per
+            last_acc = running_acc / 50
+            print('batch {} train_loss: {} train_acc: {}'.format(i + 1, last_loss,last_acc))
             tb_x = epoch_index * len(training_loader) + i + 1
             tb_writer.add_scalar('Loss/train', last_loss, tb_x)
             tb_writer.add_scaler('Accuracy/train',last_acc,tb_x)
@@ -53,7 +105,7 @@ def train_one_epoch(epoch_index, tb_writer):
 
 
 
-def Trainer(epochs,model,validation_loader,loss_fn,track_opt):
+def Trainer(epochs,model,track_opt):
 
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -91,28 +143,32 @@ def Trainer(epochs,model,validation_loader,loss_fn,track_opt):
         avg_vloss = running_vloss / (i + 1)
         avg_vacc = running_vacc /(i + 1)
         print('LOSS train {} valid {}'.format(avg_loss, avg_vloss))
-
+        print('ACCURACY train {} valid {}'.format(avg_acc,avg_vacc))
         # Log the running loss averaged per batch
         # for both training and validation
         writer.add_scalars('Training vs. Validation Loss',
                         { 'Training' : avg_loss, 'Validation' : avg_vloss },
                         epoch_number + 1)
-        writer.add_scalars('Training vs. Validation Accurac',
+        writer.add_scalars('Training vs. Validation Accuracy',
                         { 'Training' : avg_acc, 'Validation' : avg_vacc },
                         epoch_number + 1)
-        writer.add_scalar('BLEU Score: ',
-                        {''}  )
         writer.flush()
 
         # Track best performance, and save the model's state
-        if avg_vloss < best_vloss:
+        
+        if avg_vloss < best_vloss and track_opt.lower()=='loss':
             best_vloss = avg_vloss
             m_path = 'runs/model_{}_{}'.format(timestamp, epoch_number)
             torch.save(model.state_dict(), m_path)
-        elif avg_vacc< best_vacc:
+        if avg_vacc< best_vacc and track_opt.lower()==('accuracy' or 'acc'):
             best_vacc=avg_vacc
             m_path = 'runs/model_{}_{}'.format(timestamp, epoch_number)
             torch.save(model.state_dict(), m_path)
             
 
         epoch_number += 1
+
+if __name__=='__main__':
+    Trainer(epochs=25,model=model,track_opt='acc')
+
+

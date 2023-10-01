@@ -12,14 +12,15 @@ def train_one_epoch(epoch_index, tb_writer):
     for i, data in enumerate(training_loader):
         # Every data instance is an input + label pair
         images, captions = data
-
+        captions=tokenizer(captions,padding='max_length',truncation=True,return_tensors='pt')
         # Zero your gradients for every batch!
         optimizer.zero_grad()
 
         # Make predictions for this batch
         outputs,attn=model(tgt=captions,image=images)
         # Compute the loss and its gradients
-        loss = loss_fn(outputs, labels)
+        loss = loss_fn(outputs, captions)
+        accuracy=accuracy(outputs,captions)
         loss.backward()
 
         # Adjust learning weights
@@ -66,7 +67,7 @@ def Trainer(epochs,model,validation_loader,loss_fn):
         with torch.no_grad():
             for i, vdata in enumerate(validation_loader):
                 vinputs, vlabels = vdata
-                vlabels_idx=model.decoder.tokenizer(vlabels,max_length=model.decoder.max_seql,padding='max_length',return_tensors='pt')
+                vlabels_idx=tokenizer(vlabels,padding='max_length',truncation=True,return_tensors='pt')
                 voutputs,attn=model(images=vinputs)
                 vloss = loss_fn(voutputs.transpose(1,2), vlabels_idx)
                 running_vloss += vloss

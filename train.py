@@ -1,6 +1,5 @@
 import torch.nn as nn
 import torch.nn.functional as F
-import torchmetrics
 from torchmetrics.text import WordErrorRate
 import argparse
 from config import Config
@@ -9,22 +8,38 @@ from dataset import HFTokenizer,Stream_Dataset
 from torch.optim import Adam,SGD, RMSprop
 from torch.nn import CrossEntropyLoss
 from model import TwoStreamTransformer
+from lightning.fabric import Fabric
+import torch
+import torchmetrics
+from torch.utils.data import Dataset, DataLoader
+from utils import *
+
+
+
+arg_parser=argparse.ArgumentParser()
+arg_parser.add_argument('--config','-c',help='Path to config file',default='config.ini',type=str,required=False)
+args=arg_parser.parse_args()
+
+
 arg_parser=argparse.ArgumentParser()
 arg_parser.add_argument('--config','-c',help='Path to config file',default=None,type=str)
 args=arg_parser.parse_args()
 
-
 config=Config(config_path=args.config)
+ 
+fabric=Fabric(accelerator=config.device,devices=config.devices_n,precision=config.precision)
+fabric.launch()
+
 
 tokenizer=HFTokenizer(tokenizer_model=config.tokenizer_model)
-training_loader=Stream_Dataset(
+training_set=Stream_Dataset(
     data_dir='flikr8k',
     csv_dir='train.csv',
     img_dir='images',
     imgsz=config.imgsz,
     tokenizer_model=config.tokenizer_model
 )
-validation_loader=Stream_Dataset(
+validation_set=Stream_Dataset(
     data_dir='flikr8k',
     csv_dir='train.csv',
     img_dir='images',
@@ -33,9 +48,15 @@ validation_loader=Stream_Dataset(
     validation=True
 )
 
+training_loader=DataLoader(training_set,batch_size=config.batch_size)
+validation_loader=DataLoader(validation_set,batch_size)
+
+
 optimizer=load_optimizer(config.optimizer)
 loss_fn=CrossEntropyLoss()
-accuracy_fn=torchemetrics.classification.Accuracy(task='multiclass',num_classes=len(tokenizer))
+accuracy_fn=torchmetrics.classification.Accuracy(task='multiclass',num_classes=len(tokenizer))
+
+
 
 model=TwoStreamTransformer(n_patches=config.n_patches,
                            img_chw=(3,config.imgsz,config.imgsz),
@@ -50,13 +71,18 @@ model=TwoStreamTransformer(n_patches=config.n_patches,
 
 
 
-def load_optimizer(opt):
-    if opt.lower()=='adam':
-        return Adam(lr=config.learning_rate)
-    elif opt.lower()=='sgd':
-        return SGD(lr=config.learning_rate,momentum=config.sgd_momentum)
-    elif opt.lower()=='rmsprop':
-        return RMSprop(lr=config.learning_rate,momentum=config.momentum,alpha=config.rms_alpha)
+
+
+
+
+model,optimizer=fabric.setup(model,optimizer)
+training_loader,validation_loader=fabric.setup_dataloaders([training_loader,validation_loader])
+num_steps = config.num_epochs * len(training_loader)
+
+
+
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=num_steps)
 
 
 def train_one_epoch(epoch_index, tb_writer):
@@ -71,7 +97,7 @@ def train_one_epoch(epoch_index, tb_writer):
     # iter(training_loader) so that we can track the batch
     # index and do some intra-epoch reporting
     for i, data in enumerate(training_loader):
-        # Every data instance is an input + label pair
+        # Every data instance is an input + caption pair
         images, captions = data
         caption_idx=tokenizer(captions,padding='max_length',return_tensors='pt')
         # Zero your gradients for every batch!
@@ -83,7 +109,7 @@ def train_one_epoch(epoch_index, tb_writer):
         loss = loss_fn(outputs, caption_idx)
         acc_=accuracy_fn(outputs,caption_idx)
 
-        loss.backward()
+        fabric.backward(loss)
         
         # Adjust learning weights
         optimizer.step()
@@ -156,14 +182,16 @@ def Trainer(epochs,model,track_opt):
 
         # Track best performance, and save the model's state
         
-        if avg_vloss < best_vloss and track_opt.lower()=='loss':
+        if avg_vloss < best_vloss:
             best_vloss = avg_vloss
             m_path = 'runs/model_{}_{}'.format(timestamp, epoch_number)
-            torch.save(model.state_dict(), m_path)
-        if avg_vacc< best_vacc and track_opt.lower()==('accuracy' or 'acc'):
+            if track_opt.lower()=='loss':
+                torch.save(model.state_dict(), m_path)
+        if avg_vacc< best_vacc:
             best_vacc=avg_vacc
             m_path = 'runs/model_{}_{}'.format(timestamp, epoch_number)
-            torch.save(model.state_dict(), m_path)
+            if track_opt.lower()==('accuracy' or 'acc'):
+                torch.save(model.state_dict(), m_path)
             
 
         epoch_number += 1

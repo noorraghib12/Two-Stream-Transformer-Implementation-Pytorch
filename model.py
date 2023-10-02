@@ -289,11 +289,11 @@ class SemanticStream(nn.Module):
         incompleted_idx=np.arange(batch_size)
 
         while True:
-            start=time.time()
+    
             if logits.shape[1]==self.max_seql or incompleted_idx.size==0:
                 break
             out,_=self.forward(target=logits,enc_memory_list=enc_memory_list)
-            mid=time.time()
+    
             lastout=out[:,-1].unsqueeze(1)
             probs=F.log_softmax(lastout,dim=-1)
             top_prob=probs.topk(1)[1].squeeze(-1)
@@ -308,14 +308,12 @@ class SemanticStream(nn.Module):
                 finished_probs[c_idx,:seq_idx+1]+=logits[np.where(completed_bool)[0],:seq_idx+1]
             logits=logits[completed_bool==False]
             seq_idx+=1
-            end=time.time()
-            print(f"inference:{mid-start}, Complete_Indexing={end-mid}")
-        start=time.time()
+
+
+    
         if incompleted_idx.size!=0:
             finished_probs[incompleted_idx]+=logits
         out,attn=self.forward(target=finished_probs.int(),enc_memory_list=enc_memory_list)
-        end=time.time()
-        print(end-start)
         return out,attn
       
         

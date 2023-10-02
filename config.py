@@ -23,7 +23,7 @@ def load_config_ini(config_path):
     config.read(config_path)
     config_=dict()
     for section in [i for i in config if 'DEFAULT' not in i]:
-        for param in section:
+        for param in config[section]:
             if len(config[section][param])>0:
                 config_[param]=int(config[section][param]) if config[section][param].isdigit() else config[section][param]
             else:

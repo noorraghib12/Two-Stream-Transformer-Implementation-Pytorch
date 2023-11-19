@@ -2,7 +2,7 @@ from typing import Optional, Any, Union, Callable, Tuple
 import torch
 from torch import math, Tensor
 import torch.nn as nn
-from torch.nn import (
+from nn import (
     MultiheadAttention,
     LayerNorm,
     Dropout,
@@ -13,29 +13,26 @@ from torch.nn import (
 from torch.utils.data import Dataset, DataLoader
 from utils import *
 
+from torch import math
+import os, logging
+from torchvision import transforms
+import numpy as np
+
+
 class PositionalEncoding(nn.Module):
+
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
 
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = 1 / (10000 ** (torch.arange(0, d_model, 2) / d_model))
-        pe = torch.zeros(max_len, d_model)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer("pe", pe)
-
-    def forward(self, patches):
-        return self.dropout(patches + self.pe)
-
-
-def _get_activation_fn(activation: str) -> Callable[[Tensor], Tensor]:
-    if activation == "relu":
-        return F.relu
-    elif activation == "gelu":
-        return F.gelu
-
-    raise RuntimeError("activation should be relu/gelu, not {}".format(activation))
+        position=torch.arange(max_len).unsqueeze(1)
+        div_term=1/(10000**(torch.arange(0,d_model,2)/d_model))
+        pe=torch.zeros(max_len,d_model)
+        pe[:,0::2]=torch.sin(position*div_term)
+        pe[:,1::2]=torch.cos(position*div_term)
+        self.register_buffer('pe', pe)
+    def forward(self,patches):
+        return self.dropout(patches+self.pe[:patches.shape[1]])
 
 
 class CustomTransformerDecoderLayer(nn.Module):
@@ -191,11 +188,47 @@ class CustomTransformerDecoderLayer(nn.Module):
         return self.dropout3(x)
 
 
+
+def generate_square_subsequent_mask(sz:int):
+    mask = (torch.triu(torch.ones(sz, sz)) == 1).transpose(0, 1)
+    mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+    return mask
+
+
+
+
+def load_bert_embedder(tokenizer_model:str,tokenizer=None):
+    tokenizer_file_name= tokenizer.name if tokenizer else tokenizer_model
+    assert tokenizer_file_name==tokenizer_model, "Please make sure the HuggingFace tokenizer and embedder are from same repo"
+    mod_pth=os.path.join("data",tokenizer_file_name.split('/')[-1],"model")
+    model=torch.hub.load('huggingface/pytorch-transformers', 'model',(mod_pth if os.path.exists(mod_pth) else tokenizer_model))
+    # model=torch.hub.load('huggingface/pytorch-transformers', 'model',mod_pth) 
+    model=update_bert_model(model,tokenizer,tokenizer_model)
+    return model
+
+
+
+def update_bert_model(model,tokenizer=None,tokenizer_model:str=None):
+    logging.info("Updating Model based on Tokenizer")
+    tokenizer_file_name=tokenizer.name if not tokenizer_model else tokenizer_model
+    tok_pth=os.path.join("data",tokenizer_file_name.split('/')[-1],"tokenizer")
+    if not tokenizer:
+        if not os.path.exists(tok_pth):
+            raise ValueError(f"Please update tokenizer with desired dataset and keep at {tok_pth}")
+        else:
+            tokenizer=torch.hub.load('huggingface/pytorch-transformers', 'model',tok_pth)
+    model_vocab_len=model.embeddings.word_embeddings.weight.shape[0]
+    if model_vocab_len<len(tokenizer):
+        model.resize_token_embeddings(len(tokenizer))
+    model.save_pretrained(tok_pth.replace('tokenizer','model'))
+    return model
+
+
 class ImgPatcher(nn.Module):
     def __init__(self,n_patches:int,patch_dims:int,img_chw:Tuple[int,int,int]):
         super(ImgPatcher,self).__init__()
         C,H,W=img_chw
-        assert torch.math.ceil(torch.math.sqrt(n_patches))-torch.math.sqrt(n_patches)==0, "Please make sure n_patches is a square of a positive integer"
+        assert torch.math.ceil(torch.math.sqrt(n_patches))-torch.math.sqrt(n_patches)==0, "Please make sure n_patches is of square dimensions"
         assert H==W, "Please make sure that the image is a square image"
         self.n_patches=n_patches
         self.patch_dims=patch_dims
@@ -225,33 +258,80 @@ class SpatialStream(nn.Module):
         return enc_memory_list
 
 class SemanticStream(nn.Module):
-    def __init__(self,max_seql:int,dropout:float=0.1,num_ts_blocks:int=2,d_model:int=512,nhead:int=8,dim_feedforward:int=2048,activation:str='relu',tokenizer_model='medicalai/ClinicalBERT'):
+    def __init__(self,max_seql:int,tokenizer=None,dropout:float=0.1,num_ts_blocks:int=2,d_model:int=512,nhead:int=8,dim_feedforward:int=2048,activation:str='relu',tokenizer_model='medicalai/ClinicalBERT'):
         super(SemanticStream,self).__init__()
         self.max_seql=max_seql
-        self.tokenizer=load_tokenizer(tokenizer_model=tokenizer_model)            #add this to dataloader instead of model along with patching
-        self.bert_embedding = load_bert_embedder(tokenizer_model=tokenizer_model,tokenizer=self.tokenizer)
+        self.bert_embedding = load_bert_embedder(tokenizer_model=tokenizer_model,tokenizer=tokenizer)
         self.pos_enc=PositionalEncoding(d_model,dropout,max_seql)
         self.semtransformer_blocks=nn.ModuleList([CustomTransformerDecoderLayer(d_model,nhead,dim_feedforward,batch_first=True,activation=activation) for _ in range(num_ts_blocks)])
-        self.out=nn.Linear(d_model,len(tokenizer))
-    def forward(self,tgt,enc_memory_list):
-        tgt=self.tokenizer(tgt,max_length=self.max_seql,padding='max_length',truncation=True,return_tensors='pt')
-        tokens=tgt['input_ids']
-        tgt_padmask=tgt['attention_mask']==0
-        #N,max_seql=tgt['input_ids'].shape
-        tgt_mask=torch.tril(torch.ones(self.max_seql,self.max_seql))
-        embedded=self.bert_embedding(**tgt).last_hidden_state
+        self.out=nn.Linear(d_model,self.bert_embedding.embeddings.word_embeddings.weight.shape[0])
+    def forward(self,target=None,enc_memory_list=None):
+        if isinstance(target[0],str):
+            tgt=tokenizer(target,max_length=self.max_seql,padding='max_length' if self.training else True,truncation=True,return_tensors='pt',add_special_tokens=self.training)
+        else:
+            tgt=target
+        tgt_padmask=(tgt==0)
+        tgt_mask=generate_square_subsequent_mask(tgt.shape[-1])
+        embedded=self.bert_embedding(input_ids=tgt,attention_mask=tgt_padmask).last_hidden_state
         encoded=self.pos_enc(embedded)
-        for decoder_layer,memory in zip(self.semtransformer_blocks,enc_memory_list):
-            encoded,attn=decoder_layer(encoded,memory,tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_padmask)
-            tgt_mask=None
-            tgt_padmask=None
+        for idx,(decoder_layer,memory) in enumerate(zip(self.semtransformer_blocks,enc_memory_list)):
+            encoded,attn=decoder_layer(encoded,memory,tgt_mask=tgt_mask,tgt_key_padding_mask=tgt_padmask,tgt_is_causal=False)
         out=self.out(encoded)
-
         return out,attn
+ 
 
-    def save_bert_embedder(self):
-        self.bert_embedding.save_pretrained('data/model/')
+    def evaluate(self,enc_memory_list=None):
+        batch_size=enc_memory_list[0].shape[0]
+        logits=torch.tensor([tokenizer.vocab['[CLS]'] for _ in range(batch_size)]).reshape(-1,1)
+        finished_probs=torch.zeros(batch_size,self.max_seql)    
+        seq_idx=0
+        completed_idx=[]
+        incompleted_idx=np.arange(batch_size)
+
+        while True:
+    
+            if logits.shape[1]==self.max_seql or incompleted_idx.size==0:
+                break
+            out,_=self.forward(target=logits,enc_memory_list=enc_memory_list)
+    
+            lastout=out[:,-1].unsqueeze(1)
+            probs=F.log_softmax(lastout,dim=-1)
+            top_prob=probs.topk(1)[1].squeeze(-1)
+            logits=torch.cat([logits,top_prob],axis=1) if seq_idx>0 else top_prob
+            completed_bool=(top_prob==tokenizer.vocab['[SEP]']).flatten()
+            c_idx=incompleted_idx[np.nonzero(completed_bool)]
+            c_idx=c_idx.tolist() if hasattr(c_idx,'__iter__') else [c_idx]
+            
+            if len(c_idx)>0:
+                incompleted_idx=np.array(list(set(incompleted_idx).difference(c_idx)))
+                completed_idx.extend(c_idx)
+                finished_probs[c_idx,:seq_idx+1]+=logits[np.where(completed_bool)[0],:seq_idx+1]
+            logits=logits[completed_bool==False]
+            seq_idx+=1
 
 
-# class TwoStreamTransformer(nn.Module):
-#     def __init__(self,max_seql,dropout)
+    
+        if incompleted_idx.size!=0:
+            finished_probs[incompleted_idx]+=logits
+        out,attn=self.forward(target=finished_probs.int(),enc_memory_list=enc_memory_list)
+        return out,attn
+      
+        
+
+
+class TwoStreamTransformer(nn.Module):
+    def __init__(self, n_patches:int,img_chw:Tuple[int,int,int],max_seql:int,dropout:float=0.1,d_model:int=768,nhead:int=8,dim_feedforward:int=2048,activation:str='relu',num_ts_blocks:int=2,tokenizer_model:any='medicalai/ClinicalBERT'):
+        super(TwoStreamTransformer,self).__init__()
+        self.encoder=SpatialStream(n_patches,img_chw,dropout,d_model,nhead,dim_feedforward,activation,num_ts_blocks)
+        self.decoder=SemanticStream(max_seql,dropout,num_ts_blocks,d_model,nhead,dim_feedforward,activation,tokenizer_model)
+
+    def forward(self,images,target=None):
+        enc_memory_list=self.encoder(images)
+        if not self.training:
+            logits,attn=self.decoder.evaluate(enc_memory_list=enc_memory_list)
+        else:
+            logits,attn=self.decoder(enc_memory_list=enc_memory_list,target=target)
+        return logits,attn            
+
+
+
